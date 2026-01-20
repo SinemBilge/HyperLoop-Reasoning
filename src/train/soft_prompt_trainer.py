@@ -449,6 +449,14 @@ class SoftPromptTrainer:
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'epoch': epoch
                     }
+                    # Save alpha parameter if present (for looped hyperbolic models)
+                    if hasattr(self.model.module.knit5, 'alpha'):
+                        savings['alpha'] = self.model.module.knit5.alpha.data
+                    # Save looping parameters if present
+                    if hasattr(self.model.module.knit5, 'num_loops'):
+                        savings['num_loops'] = self.model.module.knit5.num_loops
+                    if hasattr(self.model.module.knit5, 'max_norm'):
+                        savings['max_norm'] = self.model.module.knit5.max_norm
                     # if self.training_config.use_soft_prompt:
                     #     savings["optimizer_softprompt_state_dict"] = self.optimizer_soft_prompt.state_dict()
                     torch.save(savings, soft_prompt_path)
@@ -495,6 +503,14 @@ class SoftPromptTrainer:
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'epoch': epoch
                 }
+                # Save alpha parameter if present (for looped hyperbolic models)
+                if hasattr(self.model.knit5, 'alpha'):
+                    savings['alpha'] = self.model.knit5.alpha.data
+                # Save looping parameters if present
+                if hasattr(self.model.knit5, 'num_loops'):
+                    savings['num_loops'] = self.model.knit5.num_loops
+                if hasattr(self.model.knit5, 'max_norm'):
+                    savings['max_norm'] = self.model.knit5.max_norm
                 # if self.training_config.use_soft_prompt:
                 #         savings["optimizer_softprompt_state_dict"] = self.optimizer_soft_prompt.state_dict()
                 torch.save(savings, soft_prompt_path)

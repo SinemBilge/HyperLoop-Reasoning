@@ -5,7 +5,6 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import os
 import sys
-import signal
 from datetime import datetime
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
@@ -18,6 +17,8 @@ from typing import Union
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from src.models import T5ModelWithAdditionalLayer
+import signal
+import sys
 
 """Triggering Multi-Hop Reasoning for Question Answering
 in Language Models using Soft Prompts and Random Walks: https://arxiv.org/pdf/2306.04009
@@ -60,7 +61,7 @@ class ModelTrainer:
         self.tboard_checkpoint_path = tboard_checkpoint_path
         self.validation_step = validation_step
         self.load_optimizer = load_optimizer
-        
+        self.gradient_accumulation_steps = 2
         
         
         
@@ -126,12 +127,11 @@ class ModelTrainer:
     def _train_with_c4(self, epochs : int):
         min_len = min(len(self.single_hop_train_dataloader), len(self.c4_train_dataloader))
         num_iterations = 2 * min_len
-        try:
-            for epoch in range(epochs):
-                self.model.train()
-                if self.gpu_parallelization:
-                    self.single_hop_train_dataloader.sampler.set_epoch(epoch)
-                    self.c4_train_dataloader.sampler.set_epoch(epoch)
+        for epoch in range(epochs):
+            self.model.train()
+            if self.gpu_parallelization:
+                self.single_hop_train_dataloader.sampler.set_epoch(epoch)
+                self.c4_train_dataloader.sampler.set_epoch(epoch)
 
 
 
@@ -167,18 +167,19 @@ class ModelTrainer:
                 attention_mask = tokenized_inputs['attention_mask'].to(self.device)
                 labels = tokenized_labels['input_ids'].to(self.device)
                 
-                self.optimizer.zero_grad()
-             
+                if batch_idx % self.gradient_accumulation_steps == 0:
+                    self.optimizer.zero_grad()
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, labels = labels, use_cache=False)
-                # outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, labels = labels, use_cache=True)
-                loss = outputs.loss   
+                loss = outputs.loss / self.gradient_accumulation_steps  # Scale loss
 
-                
-                
                 loss.backward()
-                self.optimizer.step()
-                if self.scheduler is not None:
-                    self.scheduler.step()
+
+                # Only step optimizer every N accumulation steps
+                if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    self.optimizer.step()
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                    
                 # if batch_idx <= 10 and batch_idx % 2 == 0:
                 #     print(f"{input_str = }")
                 #     print(f"{label = }")
@@ -220,35 +221,20 @@ class ModelTrainer:
                         c = 0.0
                     self.writer.add_scalar('Training/Curvature', c, global_step)
 
-                avg_single_hop_loss = total_single_hop_loss / min_len
-                avg_c4_loss = total_c4_loss / min_len
-                print(f"Epoch {epoch} - Training - AVGLoss for SingleHop: {avg_single_hop_loss:.4f} | AVGLoss for C4: {avg_c4_loss:.4f}")
-
-                if (self.val_dataloader is not None) and (epoch % self.validation_step == 0):
-                    if self.evaluate(epoch=epoch):
-                        break #Early Stopping
-        except KeyboardInterrupt:
-            print("\n\n⚠️  Training interrupted by user (Ctrl+C)!")
-            print(f"Saving checkpoint at epoch {epoch}...")
-
-            checkpoint_path = f"{self.model_dir}/knit5_interrupted_epoch_{epoch}.pth"
-            if self.rank == 0 or not self.gpu_parallelization:
-                torch.save({
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'epoch': epoch
-                }, checkpoint_path)
-                print(f"✓ Checkpoint saved to: {checkpoint_path}")
-            print("Exiting training...")
-            sys.exit(0)
+            avg_single_hop_loss = total_single_hop_loss / min_len
+            avg_c4_loss = total_c4_loss / min_len
+            print(f"Epoch {epoch} - Training - AVGLoss for SingleHop: {avg_single_hop_loss:.4f} | AVGLoss for C4: {avg_c4_loss:.4f}")
+            
+            if (self.val_dataloader is not None) and (epoch % self.validation_step == 0):
+                if self.evaluate(epoch=epoch):
+                    break #Early Stopping
         
         
         
     def _train_without_c4(self, epochs : int):
-        try:
-            for epoch in range(self.start_epoch, epochs):
-                progress_bar = tqdm(self.train_dataloader, leave=True, desc=f"Epoch {epoch} - Training - {self.method}", file=sys.stdout, dynamic_ncols=True)
-                total_loss = 0
+        for epoch in range(self.start_epoch, epochs):
+            progress_bar = tqdm(self.train_dataloader, leave=True, desc=f"Epoch {epoch} - Training - {self.method}", file=sys.stdout, dynamic_ncols=True)
+            total_loss = 0
             for batch_idx, batch in enumerate(progress_bar):
                 self.optimizer.zero_grad()
                 
@@ -276,28 +262,14 @@ class ModelTrainer:
                 vram_reserved = torch.cuda.memory_reserved(self.device) / (1024 ** 2)  # Convert to MB
                 self.writer.add_scalar('VRAM/Training/Allocated', vram_allocated, epoch*len(self.train_dataloader) + batch_idx)
                 self.writer.add_scalar('VRAM/Training/Reserved', vram_reserved, epoch*len(self.train_dataloader) + batch_idx)
-                avg_loss = total_loss / len(self.train_dataloader)
-                print(f"Epoch {epoch}, Loss: {avg_loss:.4f}")
+            avg_loss = total_loss / len(self.train_dataloader)
+            print(f"Epoch {epoch}, Loss: {avg_loss:.4f}")
 
-                if (self.val_dataloader is not None) and (epoch % self.validation_step == 0):
-                    if self.evaluate(epoch=epoch):
-                        break #Early Stopping
-        except KeyboardInterrupt:
-            print("\n\n⚠️  Training interrupted by user (Ctrl+C)!")
-            print(f"Saving checkpoint at epoch {epoch}...")
-
-            checkpoint_path = f"{self.model_dir}/knit5_interrupted_epoch_{epoch}.pth"
-            if self.rank == 0 or not self.gpu_parallelization:
-                torch.save({
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'epoch': epoch
-                }, checkpoint_path)
-                print(f"✓ Checkpoint saved to: {checkpoint_path}")
-            print("Exiting training...")
-            sys.exit(0)
-
-
+            if (self.val_dataloader is not None) and (epoch % self.validation_step == 0):
+                if self.evaluate(epoch=epoch):
+                    break #Early Stopping
+    
+            
     def evaluate(self,
                 epoch : int):
         self.model.eval()

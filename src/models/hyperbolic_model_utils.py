@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from .hyperbolic_nn_resnet.modules import PoincareLinear, LorentzLinear
 from .hyperbolic_nn_resnet.manifolds import PoincareBallStdGrad, PoincareBallCustomAutograd
 from .hyperbolic_nn_resnet.manifolds.lorentz import Lorentz
+
 class HyperbolicLinearLayer(nn.Module):
     def __init__(self, in_features, out_features, c):
         super().__init__()

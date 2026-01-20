@@ -85,8 +85,8 @@ class T5ModelWithAdditionalLayer(T5ForConditionalGeneration):
         else:
             print(f"Loading Checkpoint from {checkpoint_hyperbolic_knit5}")
             checkpoint = torch.load(checkpoint_hyperbolic_knit5)
-            if gpu_parallelization:
-                checkpoint['model_state_dict'] = {k.replace('module.', ''): v for k, v in checkpoint['model_state_dict'].items()}
+            # if gpu_parallelization:
+            checkpoint['model_state_dict'] = {k.replace('module.', ''): v for k, v in checkpoint['model_state_dict'].items()}
             
 
             missing, unexpected = self.load_state_dict(checkpoint['model_state_dict'] if with_model_state_dict else checkpoint, strict=False)
@@ -120,7 +120,8 @@ class T5ModelWithAdditionalLayer(T5ForConditionalGeneration):
                 use_cache: Optional[bool] = None,
                 output_attentions: Optional[bool] = None,
                 output_hidden_states: Optional[bool] = None,
-                return_dict: Optional[bool] = None):
+                return_dict: Optional[bool] = None,
+                              **kwargs):
         
         
         use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -196,6 +197,7 @@ class T5ModelWithAdditionalLayer(T5ForConditionalGeneration):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs
         )
 
         sequence_output = decoder_outputs[0]
@@ -256,7 +258,7 @@ class T5ModelWithAdditionalLayer(T5ForConditionalGeneration):
                 output_attentions: Optional[bool] = None,
                 output_hidden_states: Optional[bool] = None,
                 return_dict: Optional[bool] = None,
-                **kwargs):
+               **kwargs):
     
         return self._forward_after_encoder(
                              soft_prompt = soft_prompt,

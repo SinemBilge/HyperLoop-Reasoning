@@ -39,7 +39,7 @@ class Config:
                              model_checkpoint_path= None,
                              tboard_checkpoint_path=None,
                              scheduler=None,
-                             num_workers=16,
+                             num_workers=0,
                              curvature=log(exp(0.1) - 1),
                              gpu_parallelization=True,  # Set to False for Mac/CPU training
                              learning_rate=0.001,
@@ -83,7 +83,7 @@ class Config:
                              model_save_path='checkpoints/metaqa/parse_training/',
                              model_checkpoint_path= 'checkpoints/musique_dataset/knowledge_integration/euclidean_gt_not_replaced/knit5_epoch_28_val_loss_0.0045.pth',
                              tboard_checkpoint_path=None,
-                             num_workers=1,
+                             num_workers=0,
                              curvature=log(exp(1.0) - 1),
                              gpu_parallelization=True
                              )
@@ -98,7 +98,7 @@ class Config:
     class T5_Model:
         def __init__(self):
             self.batch_size = 64
-            self.model_name = "google/t5-base-lm-adapt"            
+            self.model_name = "google/t5-large-lm-adapt"            
             self.tokenizer_max_length = 512
             self.map_encoder_layers = []
             self.map_decoder_layers = []

@@ -49,11 +49,14 @@ def evaluate_looped_model(
     print("Evaluating on test set...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(test_loader)):
-            questions = batch['question']
-            answers = batch['answer']
+            # Dataset returns (questions, complete_paths) tuples
+            questions, complete_paths = batch
+
+            # Extract final answer from complete_path: "e1 ; r1 ; e2 ; r2 ; answer"
+            answers = [path.split(';')[-1].strip() for path in complete_paths]
 
             inputs = tokenizer(
-                questions,
+                list(questions),
                 return_tensors='pt',
                 padding=True,
                 truncation=True,
@@ -69,20 +72,22 @@ def evaluate_looped_model(
                 tokenizer=tokenizer
             )
 
-            for i, (pred, answer) in enumerate(zip(predictions, answers)):
-                pred_parts = [p.strip() for p in pred.split('|')]
+            for i, (pred, answer, complete_path) in enumerate(zip(predictions, answers, complete_paths)):
+                # Extract answer from prediction path
+                pred_parts = [p.strip() for p in pred.split(';')]
                 pred_answer = pred_parts[-1] if pred_parts else pred
 
                 pred_answer = pred_answer.lower().strip()
-                answer = answer.lower().strip()
+                answer_norm = answer.lower().strip()
 
-                em = 1 if pred_answer == answer else 0
+                em = 1 if pred_answer == answer_norm else 0
                 total_em += em
                 total_samples += 1
 
                 results.append({
                     'question': questions[i],
                     'true_answer': answer,
+                    'true_path': complete_path,
                     'predicted_answer': pred_answer,
                     'full_prediction': pred,
                     'parsed_path': intermediate['parsed_path'][i],
