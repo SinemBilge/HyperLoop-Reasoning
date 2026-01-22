@@ -2,7 +2,7 @@
 T5 Model with Hyperbolic Layer + Looping
 
 This extends the original T5ModelWithAdditionalLayer to add looping
-of the hyperbolic layer during training, with input injection to prevent
+of the euclidean and hyperbolic layer during training, with input injection to prevent
 representation collapse.
 
 """
@@ -10,16 +10,16 @@ representation collapse.
 from transformers.modeling_outputs import Seq2SeqLMOutput, BaseModelOutput
 from transformers import T5ForConditionalGeneration, T5Config
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any, Union
 import torch.nn as nn
 import torch
 from torch.nn import CrossEntropyLoss
 
-from .hyperbolic_model_utils import HyperbolicLayer
+from .hyperbolic_model_utils import *
 
 
 def clamp_to_ball(x: torch.Tensor, max_norm: float = 0.9) -> torch.Tensor:
-    """Clamp vectors to stay inside Poincaré ball"""
+    """Project vectors to stay within the Poincaré ball boundary."""
     norm = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
     clamped = torch.where(
         norm > max_norm,
@@ -28,127 +28,105 @@ def clamp_to_ball(x: torch.Tensor, max_norm: float = 0.9) -> torch.Tensor:
     )
     return clamped
 
-
 class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
-    """
-    T5 with looped hyperbolic layer.
-
-    Same as T5ModelWithAdditionalLayer but loops the hyperbolic layer
-    num_loops times with input injection.
-    """
-
     def __init__(self,
-                 layer_type: str,
-                 model_name: str = 'google/t5-large-lm-adapt',
-                 checkpoint_hyperbolic_knit5: str = None,
-                 with_model_state_dict=True,
-                 curvature: Optional[float] = 0.3,
-                 gpu_parallelization=False,
-                 soft_prompt_length=100,
-                 num_loops: int = 4,
-                 max_norm: float = 0.9,
-                 input_injection: bool = True):
-        config: T5Config = T5Config.from_pretrained(model_name)
+                 layer_type : str,
+                 model_name : str = 'google/t5-large-lm-adapt',
+                 checkpoint_hyperbolic_knit5 : str = None,
+                 with_model_state_dict = True,
+                 curvature : Optional[float] = 0.3,
+                 num_layers : int = 1,
+                 gpu_parallelization = False, 
+                 soft_prompt_length = 100,
+                 only_map_soft_prompt = False,
+                 num_loops: int = 1,
+                 input_injection: bool = True,
+                 max_norm: float = 0.9):
+        
+        config : T5Config = T5Config.from_pretrained(model_name)
         super(T5ModelWithLoopedHyperbolic, self).__init__(config=config)
-
+        
         self.curvature = curvature
         self.soft_prompt_length = soft_prompt_length
-        self.model_name = model_name
         self.num_loops = num_loops
-        self.max_norm = max_norm
         self.input_injection = input_injection
+        self.max_norm = max_norm
+        self.only_map_soft_prompt = only_map_soft_prompt
+        self.model_name = model_name
         self.additional_layer_type = layer_type
+        
+        in_features = config.d_model 
+        
+        if self.only_map_soft_prompt:
+            print(f"Passing only soft prompts through bottleneck")
+        else:
+            print(f"Passing everything through bottleneck layer")
+            
+        if layer_type not in ['linear', 'hyperbolic', 'identity']:
+            raise ValueError(f"{layer_type} not supported. Use 'hyperbolic', 'linear', or 'identity'")
 
-        in_features = config.d_model
-
-        print(f"Initializing T5ModelWithLoopedHyperbolic:")
-        print(f"  - Layer type: {layer_type}")
-        print(f"  - Num loops: {num_loops}")
-        print(f"  - Max norm (clamp): {max_norm}")
-        print(f"  - Input injection: {input_injection}")
-
-        # Create the layer (same as original)
         if layer_type == 'linear':
             self.hyperbolic_layer = nn.Linear(in_features=in_features, out_features=in_features)
-            print("Using Euclidean Additional Layer")
+            print(f"Using Euclidean Layer with {self.num_loops} shared loops")
         elif layer_type == 'hyperbolic':
             self.hyperbolic_layer = HyperbolicLayer(
-                curvature=self.curvature,
-                type='poincare',
-                scaled=False,
-                learnable=True,
-                in_features=in_features,
+                curvature=self.curvature, 
+                type='poincare', 
+                scaled=False, 
+                learnable=True, 
+                in_features=in_features, 
                 out_features=in_features
             )
-            print("Using Hyperbolic Additional Layer")
-        elif layer_type == 'identity':
-            self.hyperbolic_layer = nn.Identity()
-            print("Using Identity (No Extra Layer)")
+            print(f"Using Hyperbolic Layer with {self.num_loops} shared loops")
         else:
-            raise ValueError(f"{layer_type} not supported. Only 'hyperbolic', 'linear', or 'identity'")
+            self.hyperbolic_layer = nn.Identity()
 
-        # Learnable mixing weight for input injection
         self.alpha = nn.Parameter(torch.tensor(0.5))
 
-        # Load weights
         if checkpoint_hyperbolic_knit5 is None:
-            print("Initializing T5 Model from pretrained...")
+            print("Initializing T5 Model from pretrained weights...")
             pretrained_model = T5ForConditionalGeneration.from_pretrained(model_name)
-            missing, unexpected = self.load_state_dict(pretrained_model.state_dict(), strict=False)
-            print(f"Missing: {missing}")
-            print(f"Unexpected: {unexpected}")
+            missing, unexpected = self.load_state_dict(pretrained_model.state_dict(), strict = False)
+            print(f"Missing: {len(missing)} keys, Unexpected: {len(unexpected)} keys")
             del pretrained_model
         else:
             print(f"Loading Checkpoint from {checkpoint_hyperbolic_knit5}")
             checkpoint = torch.load(checkpoint_hyperbolic_knit5, map_location='cpu')
+            
+            state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
-            if gpu_parallelization or True:  # Always try to strip module prefix
-                if 'model_state_dict' in checkpoint:
-                    checkpoint['model_state_dict'] = {
-                        k.replace('module.', ''): v
-                        for k, v in checkpoint['model_state_dict'].items()
-                    }
-                else:
-                    checkpoint = {k.replace('module.', ''): v for k, v in checkpoint.items()}
-
-            state_dict = checkpoint['model_state_dict'] if with_model_state_dict else checkpoint
             missing, unexpected = self.load_state_dict(state_dict, strict=False)
-            print(f"Missing: {missing}")
-            print(f"Unexpected: {unexpected}")
+            print(f"Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
 
         self.post_init()
         self.model_parallel = False
         self.device_map = None
 
-    def _apply_looped_hyperbolic(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def _apply_recurrent_loop(self, h: torch.Tensor) -> torch.Tensor:
         """
-        Apply hyperbolic layer with looping and input injection.
-
-        Args:
-            hidden_states: Encoder output [batch, seq_len, hidden_dim]
-
-        Returns:
-            Processed hidden states
+        Processes hidden states through the shared weights iteratively.
         """
-        # Save original for input injection
-        h_original = hidden_states
-        h = hidden_states
-
+        h_original = h
+        h_state = h
         alpha = torch.sigmoid(self.alpha)
 
-        for loop_idx in range(self.num_loops):
-            # Apply hyperbolic layer
-            h = self.hyperbolic_layer(h)
+        for i in range(self.num_loops):
+            h_state = self.hyperbolic_layer(h_state)
 
-            # Clamp to stay inside ball (prevents gradient explosion)
-            h = clamp_to_ball(h, self.max_norm)
+            if self.additional_layer_type == 'linear':
+                h_state = torch.relu(h_state)
+    
+            elif self.additional_layer_type == 'hyperbolic':
+                h_state = clamp_to_ball(h_state, self.max_norm)
 
-            # Input injection: mix with original
             if self.input_injection:
-                h = alpha * h + (1 - alpha) * h_original
-                h = clamp_to_ball(h, self.max_norm)
-
-        return h
+                h_state = alpha * h_state + (1 - alpha) * h_original
+                
+                if self.additional_layer_type == 'hyperbolic':
+                    h_state = clamp_to_ball(h_state, self.max_norm)
+        
+        return h_state
 
     def _forward_after_encoder(self,
                 soft_prompt: Optional[torch.LongTensor] = None,
@@ -169,15 +147,16 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
                 output_hidden_states: Optional[bool] = None,
                 return_dict: Optional[bool] = None,
                 **kwargs):
-
+        
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
 
         if head_mask is not None and decoder_head_mask is None:
             if self.config.num_layers == self.config.num_decoder_layers:
                 decoder_head_mask = head_mask
 
-        # Encode if needed
+  
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
@@ -187,6 +166,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                **kwargs
             )
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
@@ -197,8 +177,19 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
 
         hidden_states = encoder_outputs[0]
 
-        # Apply looped hyperbolic layer ===
-        hidden_states = self._apply_looped_hyperbolic(hidden_states)
+
+        if self.only_map_soft_prompt:
+
+            soft_prompt_hidden_state = hidden_states[:, :self.soft_prompt_length, :]
+            soft_prompt_hidden_state = self._apply_recurrent_loop(soft_prompt_hidden_state)
+            
+
+            hidden_states = torch.cat([
+                soft_prompt_hidden_state, 
+                hidden_states[:, self.soft_prompt_length:, :]
+            ], dim=1)
+        else:
+            hidden_states = self._apply_recurrent_loop(hidden_states)
 
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
@@ -216,7 +207,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
-        # Decode
+
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -230,7 +221,6 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            **kwargs
         )
 
         sequence_output = decoder_outputs[0]
@@ -266,7 +256,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
-
+    
     def forward(self,
                 soft_prompt: Optional[torch.LongTensor] = None,
                 input_ids: Optional[torch.LongTensor] = None,
@@ -286,10 +276,10 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
                 output_hidden_states: Optional[bool] = None,
                 return_dict: Optional[bool] = None,
                 **kwargs):
-
+    
         return self._forward_after_encoder(
-                             soft_prompt=soft_prompt,
-                             input_ids=input_ids,
+                             soft_prompt = soft_prompt,
+                             input_ids = input_ids,
                              inputs_embeds=inputs_embeds,
                              attention_mask=attention_mask,
                              labels=labels,
@@ -304,4 +294,5 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
                              use_cache=use_cache,
                              output_attentions=output_attentions,
                              output_hidden_states=output_hidden_states,
-                             return_dict=return_dict)
+                             return_dict=return_dict,
+                             **kwargs)
