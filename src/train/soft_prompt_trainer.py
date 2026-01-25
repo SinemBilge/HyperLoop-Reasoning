@@ -92,10 +92,44 @@ class SoftPromptTrainer:
                 'lr': self.training_config.learning_rate
             })
 
+        knit5 = self.model.module.knit5 if self.gpu_parallelization else self.model.knit5
+
+        # Collect all parameter ids already added to avoid duplicates
+        added_param_ids = set()
+
+        # Add hyperbolic layer parameters
+        hyp_layer_params = list(knit5.hyperbolic_layer.parameters())
         optimizer_params.append({
-            'params': self.model.module.knit5.hyperbolic_layer.parameters() if self.gpu_parallelization else self.model.knit5.hyperbolic_layer.parameters(),
+            'params': hyp_layer_params,
             'lr': config.single_hop_training.learning_rate
         })
+        for p in hyp_layer_params:
+            added_param_ids.add(id(p))
+
+        # Add alpha parameter if present (for looped hyperbolic models) and not already added
+        if hasattr(knit5, 'alpha') and knit5.alpha is not None:
+            if id(knit5.alpha) not in added_param_ids:
+                optimizer_params.append({
+                    'params': [knit5.alpha],
+                    'lr': config.single_hop_training.learning_rate
+                })
+                added_param_ids.add(id(knit5.alpha))
+                print(f"Added alpha parameter to optimizer (initial value: {knit5.alpha.item():.4f})")
+            else:
+                print(f"Alpha already in optimizer via hyperbolic_layer.parameters()")
+
+        # Add manifold curvature parameter if learnable and not already added
+        # Note: manifold might be shared with hyperbolic_layer, so check for duplicates
+        if hasattr(knit5, 'manifold') and hasattr(knit5.manifold, 'isp_c') and knit5.manifold.learnable:
+            if id(knit5.manifold.isp_c) not in added_param_ids:
+                optimizer_params.append({
+                    'params': [knit5.manifold.isp_c],
+                    'lr': config.single_hop_training.learning_rate
+                })
+                added_param_ids.add(id(knit5.manifold.isp_c))
+                print(f"Added manifold curvature parameter to optimizer")
+            else:
+                print(f"Manifold curvature already in optimizer via hyperbolic_layer.parameters()")
 
         self.optimizer = get_optimizer(optimizer_params, self.training_config)
 
