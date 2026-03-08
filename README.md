@@ -82,26 +82,15 @@ python train_random_walk.py \
 ### Full pipeline (parse → hop)
 ```bash
 python test_parse_then_hop.py \
-    --dataset 2wikimultihop \
-    --additional_layer_parse hyperbolic \
-    --additional_layer_hop hyperbolic \
-    --knit5_checkpoint_path checkpoints/knit5.pth \
-    --parsing_prompt_checkpoint_path checkpoints/parsing_prompt.pth \
-    --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth \
-    --batch_size 8
-```
-
-## Analysis Scripts
-
-### Inference-time loop analysis
-Analyzes per-iteration intermediate representations to test whether iteration *t* resolves hop *t*:
-```bash
-python analyze_loop_intermediates.py \
-    --dataset 2wikimultihop \
-    --prompt_checkpoint checkpoints/hopping_prompt.pth \
-    --knit5_checkpoint checkpoints/knit5.pth \
-    --num_loop_iterations 2 \
-    --max_samples 500
+      --dataset 2wikimultihop\
+      --additional_layer_parse hyperbolic \
+      --additional_layer_hop hyperbolic \  
+      --knit5_checkpoint_path checkpoints/knit5.pth \
+      --parsing_prompt_checkpoint_path checkpoints/parsing_prompt.pth \
+      --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth \
+      --num_loop_iterations_parse 1 \
+      --num_loop_iterations_hop 2 \
+      --batch_size 8   
 ```
 
 ### Distance ordering accuracy
@@ -120,28 +109,4 @@ python compute_delta_hyperbolicity.py \
     ...
 ```
 
-## Architecture
 
-```
-                    Looped Hyperbolic Layer
-                    ======================
-Input -> T5 Encoder -> [HyperbolicLayer + iteration embedding + residual] x T -> T5 Decoder -> Output
-                              ^                                            |
-                              |____________________________________________|
-                                        (weight-shared, T iterations)
-```
-
-The `LoopedHyperbolicLayer` applies a single shared `HyperbolicLayer` *T* times with:
-- Learned iteration embeddings (one per timestep)
-- Residual connections at each iteration
-- Minimal parameter overhead (~T × hidden_dim)
-
-### Alpha Input Injection Variant
-
-An alternative looping strategy using learnable per-loop mixing coefficients (`T5ModelWithLoopedHyperbolic`):
-
-```
-h_i = alpha_i * f(h_{i-1}) + (1 - alpha_i) * h_encoder
-```
-
-Each `alpha_i` is a learned scalar (passed through sigmoid) controlling how much of the transformed representation vs. the original encoder output is retained at each iteration. Includes Poincaré ball clamping for hyperbolic stability. See `src/models/hyperbolic_t5_with_looping_alpha_i.py`.
