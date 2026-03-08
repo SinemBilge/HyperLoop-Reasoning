@@ -14,7 +14,7 @@ import torch.distributed as dist
 from math import log,exp
 
 config = Config()
-def _knowledge_integration_with_c4(dataset, rank, world_size, learning_rate=0.001, epochs=50, checkpoint_save_path=None, tboard_logs_save_path=None, batch_size=64, additional_layer = 'identity', curvature = 1.0):
+def _knowledge_integration_with_c4(dataset, rank, world_size, learning_rate=0.001, epochs=50, checkpoint_save_path=None, tboard_logs_save_path=None, batch_size=64, additional_layer = 'identity', curvature = 1.0, resume_checkpoint=None):
 
     if dataset in ['2wikimultihop', 'wikimultihop', '2wikihop', 'wikihop']: 
         print("Training on 2WikiMultiHopQA")
@@ -92,7 +92,7 @@ def _knowledge_integration_with_c4(dataset, rank, world_size, learning_rate=0.00
     print(f"Setting Curvature to {config.single_hop_training.curvature}")
 
     print(f"Train Euclidean T5 Model")
-    model = T5ModelWithAdditionalLayer(layer_type=additional_layer, curvature=config.single_hop_training.curvature, checkpoint_hyperbolic_knit5=config.single_hop_training.model_checkpoint_path, with_model_state_dict=True, gpu_parallelization=config.single_hop_training.gpu_parallelization)
+    model = T5ModelWithAdditionalLayer(layer_type=additional_layer, curvature=config.single_hop_training.curvature, checkpoint_hyperbolic_knit5=resume_checkpoint, with_model_state_dict=True, gpu_parallelization=config.single_hop_training.gpu_parallelization)
     model.config.dropout_rate = 0.1
     model.config.hidden_dropout_prob = 0.1
     model.config.attention_probs_dropout_prob = 0.1
@@ -181,9 +181,9 @@ def setup_ddp(rank, world_size):
     set_seed(42)
     
 
-def train_ddp(rank, world_size, dataset, learning_rate, epochs, checkpoint_save_path, tboard_logs_save_path, batch_size, additional_layer, curvature):
+def train_ddp(rank, world_size, dataset, learning_rate, epochs, checkpoint_save_path, tboard_logs_save_path, batch_size, additional_layer, curvature, resume_checkpoint):
     setup_ddp(rank, world_size)
-    _knowledge_integration_with_c4(dataset=dataset, rank=rank, world_size=world_size, learning_rate=learning_rate, epochs=epochs, checkpoint_save_path=checkpoint_save_path, tboard_logs_save_path=tboard_logs_save_path, batch_size=batch_size, additional_layer = additional_layer, curvature = curvature)  # Call your training method
+    _knowledge_integration_with_c4(dataset=dataset, rank=rank, world_size=world_size, learning_rate=learning_rate, epochs=epochs, checkpoint_save_path=checkpoint_save_path, tboard_logs_save_path=tboard_logs_save_path, batch_size=batch_size, additional_layer=additional_layer, curvature=curvature, resume_checkpoint=resume_checkpoint)
     dist.destroy_process_group()
     
 if __name__ == '__main__':
@@ -231,6 +231,12 @@ if __name__ == '__main__':
         default=64,
         help='Specify path for tensorboard logs'
     )
+    parser.add_argument(
+        '--resume_checkpoint',
+        type=str,
+        default=None,
+        help='Path to checkpoint to resume training from'
+    )
     args = parser.parse_args()
     dataset = args.dataset  # Pass the dataset name
     learning_rate = args.learning_rate
@@ -240,8 +246,9 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     additional_layer = args.additional_layer
     curvature = args.curvature
+    resume_checkpoint = args.resume_checkpoint
     if config.single_hop_training.gpu_parallelization:
         world_size = torch.cuda.device_count()
-        mp.spawn(train_ddp, args=(world_size, dataset, learning_rate, epochs, checkpoint_save_path, tboard_logs_save_path, batch_size, additional_layer, curvature), nprocs=world_size, join=True)
+        mp.spawn(train_ddp, args=(world_size, dataset, learning_rate, epochs, checkpoint_save_path, tboard_logs_save_path, batch_size, additional_layer, curvature, resume_checkpoint), nprocs=world_size, join=True)
     else:
-        _knowledge_integration_with_c4(dataset=dataset, rank=0, world_size=1, learning_rate=learning_rate, epochs=epochs, checkpoint_save_path=checkpoint_save_path, tboard_logs_save_path=tboard_logs_save_path, batch_size=batch_size, additional_layer=additional_layer, curvature=curvature)
+        _knowledge_integration_with_c4(dataset=dataset, rank=0, world_size=1, learning_rate=learning_rate, epochs=epochs, checkpoint_save_path=checkpoint_save_path, tboard_logs_save_path=tboard_logs_save_path, batch_size=batch_size, additional_layer=additional_layer, curvature=curvature, resume_checkpoint=resume_checkpoint)

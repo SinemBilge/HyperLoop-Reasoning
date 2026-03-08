@@ -14,7 +14,8 @@ class BaseTrainingConfig:
                      load_optimizer = False,
                      additional_log_info = '',
                      num_workers = 4,
-                     gpu_parallelization = False):
+                     gpu_parallelization = False,
+                     num_loop_iterations = 1):
             self.optimizer = optimizer #[Adam, AdamW, AdaFactor, Hyperbolic]
             self.learning_rate = learning_rate #Same as in the paper
             self.optimizer_param = optimizer_param #weight_decay for AdamW Check which Optimizer
@@ -30,6 +31,7 @@ class BaseTrainingConfig:
             self.curvature = curvature
             self.additional_log_info = additional_log_info
             self.gpu_parallelization = gpu_parallelization
+            self.num_loop_iterations = num_loop_iterations
             
 class Config:  
     class SingleHopTraining(BaseTrainingConfig):
@@ -39,9 +41,9 @@ class Config:
                              model_checkpoint_path= None,
                              tboard_checkpoint_path=None,
                              scheduler=None,
-                             num_workers=0,
+                             num_workers=16,
                              curvature=log(exp(0.1) - 1),
-                             gpu_parallelization=True,  # Set to False for Mac/CPU training
+                            #  gpu_parallelization=True,
                              learning_rate=0.001,
                              epochs=50)
             self.additional_log_info=f'knowledge_integration_bsize64_lr0.001'
@@ -67,7 +69,7 @@ class Config:
                              num_workers=1,
                              optimizer='AdaFactor',
                              curvature=log(exp(0.32) - 1),
-                             gpu_parallelization=True
+                            #  gpu_parallelization=True
                              )
             self.use_scheduler = False
             self.use_soft_prompt = True
@@ -83,9 +85,9 @@ class Config:
                              model_save_path='checkpoints/metaqa/parse_training/',
                              model_checkpoint_path= 'checkpoints/musique_dataset/knowledge_integration/euclidean_gt_not_replaced/knit5_epoch_28_val_loss_0.0045.pth',
                              tboard_checkpoint_path=None,
-                             num_workers=0,
+                             num_workers=1,
                              curvature=log(exp(1.0) - 1),
-                             gpu_parallelization=True
+                            #  gpu_parallelization=True
                              )
             self.use_scheduler = False
             self.use_soft_prompt = True
@@ -97,7 +99,7 @@ class Config:
                 
     class T5_Model:
         def __init__(self):
-            self.batch_size = 64
+            self.batch_size = 1
             self.model_name = "google/t5-large-lm-adapt"            
             self.tokenizer_max_length = 512
             self.map_encoder_layers = []

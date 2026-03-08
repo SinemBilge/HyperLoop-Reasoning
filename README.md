@@ -1,179 +1,147 @@
 # HyperLoop-Reasoning
 
 Looped Hyperbolic Transformer for Multi-Hop Question Answering.
-First Experiments directory contains inference-time experiments with added looping.
-Current directory has training scripts for integrated looping architecture in soft prompt training.
+
+This project extends T5 with a **hyperbolic additional layer** (Poincaré ball) and **weight-shared looping** (LoopedHyperbolicLayer) for multi-hop reasoning. Training follows a two-stage soft prompt approach: (1) parsing questions into sub-questions, and (2) hopping across knowledge graph entities.
+
+> **Acknowledgement:** This repository builds upon [HyperbolicMultiHopReasoning](https://github.com/caisa-lab/HyperbolicMultiHopReasoning) by the CAISA Lab.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 ```
-## Required Checkpoints for Training with Soft Prompts
 
-| Checkpoint | Description |
-|------------|-------------|
-| `knit5.pth` | Knowledge-integrated T5-Large (~3GB) |
-
-## Required Checkpoints for Testing
-
-| Checkpoint | Description |
-|------------|-------------|
-| `knit5.pth` | Knowledge-integrated T5-Large (~3GB) |
-| `parsing_prompt.pth` | Parsing soft prompt (~4MB) |
-| `hopping_prompt.pth` | Hopping soft prompt (~4MB) |
-
-
-## Training with Looping
-
-### 1. Hyperbolic Layer looping
-
-Loops the hyperbolic layer output N types with input injection:
+## Project Structure
 
 ```
-Encoder -> hidden_states -> [Hyperbolic + Input Injection] x N -> Decoder
+├── src/
+│   ├── config.py                        # Training configurations
+│   ├── eval.py                          # Evaluation metrics (EM, F1)
+│   ├── knowledge_graph.py               # Knowledge graph construction
+│   ├── models/
+│   │   ├── hyperbolic_t5_additional_layer.py   # T5 + configurable additional layer
+│   │   ├── hyperbolic_t5_with_looping_alpha_i.py # T5 + alpha input injection looping
+│   │   ├── hyperbolic_model_utils.py           # HyperbolicLayer & LoopedHyperbolicLayer
+│   │   ├── soft_prompt_model.py                # Soft prompt wrapper
+│   │   └── hyperbolic_nn_resnet/               # Poincaré/Lorentz manifold math
+│   ├── datasets/                        # Dataset loaders (WikiMultiHop, MetaQA, MLPQ, PQL)
+│   ├── train/
+│   │   ├── soft_prompt_trainer.py       # Soft prompt training loop (DDP-ready)
+│   │   ├── soft_prompt_trainer_alpha_i.py # Trainer with alpha_i parameter handling
+│   │   └── model_trainer.py             # Base model trainer
+│   └── utils/
+├── train_knowledge_integration.py       # Stage 1: Knowledge integration
+├── train_parse_then_hop.py              # Stage 2a: Parsing prompt training
+├── train_random_walk.py                 # Stage 2b: Hopping prompt training
+├── test_parsing.py                      # Test parsing stage
+├── test_random_walk.py                  # Test hopping stage
+├── test_parse_then_hop.py               # Test full pipeline (parse → hop)
+├── analyze_loop_intermediates.py        # Per-iteration representation analysis
+├── compute_distance_accuracy.py         # Hyperbolic vs Euclidean distance ordering
+├── compute_delta_hyperbolicity.py       # δ-hyperbolicity per layer
+└── requirements.txt
 ```
 
-#### Stage 2a: Parsing training
+## Required Checkpoints
+
+| Checkpoint | Description | Used in |
+|------------|-------------|---------|
+| `knit5.pth` | Knowledge-integrated T5 (~3GB) | Training & Testing |
+| `parsing_prompt.pth` | Parsing soft prompt (~4MB) | Testing |
+| `hopping_prompt.pth` | Hopping soft prompt (~4MB) | Testing |
+
+## Training
+
+The additional layer type is controlled via `--additional_layer` (`identity`, `euclidean`, `hyperbolic`) and looping via `--num_loop_iterations`.
+
+### Stage 2a: Parsing
 ```bash
-python train_parse_then_hop_with_looping.py \
-        --additional_layer hyperbolic \
-        --dataset wikimultihop \
-        --knit5_checkpoint_path <path> \
-        --num_loops 4 \
-        --max_norm 0.9 \
-        --epochs 50
-```
-
-#### Stage 2b: Hopping training
-```bash
-python train_random_walk_with_looping.py \
-        --additional_layer hyperbolic \
-        --dataset wikimultihop \
-        --knit5_checkpoint_path <path> \
-        --num_loops 4 \
-        --max_norm 0.9 \
-        --epochs 50
-```
-
-
-### 2. Euclidean Layer Looping
-
-Similar to hyperbolic, only with looping happening in Euclidean layer:
-
-#### Stage 2a: Parsing training
-```bash
-python train_parse_then_hop_with_looping_euclidean.py \
-        --additional_layer linear \
-        --dataset wikimultihop \
-        --knit5_checkpoint_path <path> \
-        --num_loops 2 \
-        --epochs 50
-```
-
-#### Stage 2b: Hopping training
-```bash
-python train_random_walk_with_looping_euclidean.py \
-        --additional_layer linear \
-        --dataset wikimultihop \
-        --knit5_checkpoint_path <path> \
-        --num_loops 2 \
-        --epochs 50
-```
-
-## Testing/Inferencing with Looping
-
-### Hyperbolic Looped Architecture
-```bash
-python test_parse_then_hop_looped.py \
-        --dataset metaqa \
-        --additional_layer_parse hyperbolic \
-        --additional_layer_hop hyperbolic \
-        --knit5_checkpoint_path checkpoints/knowledge_integration/knit5.pth \
-        --parsing_prompt_checkpoint_path checkpoints/parse/soft_prompt.pth \
-        --hopping_prompt_checkpoint_path checkpoints/hop/soft_prompt.pth \
-        --num_loops 4 \
-        --batch_size 8
-```
-
-### Euclidean Looped Architecture
-```bash
-python test_parse_then_hop_looped_euclidean.py \
-        --dataset metaqa \
-        --knit5_checkpoint_path checkpoints/knowledge_integration/knit5.pth \
-        --parsing_prompt_checkpoint_path checkpoints/wikimultihop/parse/euclidean_looped/soft_prompt.pth \
-        --hopping_prompt_checkpoint_path checkpoints/wikimultihop/hop/euclidean_looped/soft_prompt.pth \
-        --num_loops 4 \
-        --batch_size 8
-```
-
-## Inference time looping (first experiments): Two Looping Approaches
-
-### 1. Internal Loop (Recommended)
-
-Loops the hyperbolic layer transformation on encoder hidden states:
-
-```
-Encoder -> hidden_states -> [Hyperbolic x N] -> Decoder
-```
-
-**Advantages**: Uses same trained weights, no input/output format change.
-
-```bash
-# Single evaluation
-python evaluate_internal_loop.py \
-    --dataset wikimultihop \
-    --num_loops 2 \
-    --batch_size 8 \
+python train_parse_then_hop.py \
+    --additional_layer hyperbolic \
+    --dataset 2wikimultihop \
     --knit5_checkpoint_path checkpoints/knit5.pth \
-    --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth
-
-# Compare loop counts
-python evaluate_internal_loop.py \
-    --dataset wikimultihop \
-    --compare_loops \
-    --loop_range 1 2 3 4 \
-    --batch_size 8 \
-    --knit5_checkpoint_path checkpoints/knit5.pth \
-    --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth
+    --num_loop_iterations 2 \
+    --curvature 1.0 \
+    --epochs 50
 ```
 
-Options:
-- `--num_loops`: Number of hyperbolic layer iterations (default: 1)
-- `--use_residual` / `--no_residual`: Use residual connections between loops
-- `--compare_loops`: Test multiple loop counts
-
-### 2. External Loop (Parse-then-Hop chain)
-
-Loops the full generation, feeding output back as input:
-
-```
-Question -> [Parse] -> [Hop] -> [Hop] -> ... -> Answer
-```
-
+### Stage 2b: Hopping
 ```bash
-python evaluate_looped_model.py \
-    --dataset wikimultihop \
-    --num_loops 2 \
-    --batch_size 8 \
+python train_random_walk.py \
+    --additional_layer hyperbolic \
+    --dataset 2wikimultihop \
+    --knit5_checkpoint_path checkpoints/knit5.pth \
+    --num_loop_iterations 2 \
+    --curvature 1.0 \
+    --epochs 50
+```
+
+## Testing
+
+### Full pipeline (parse → hop)
+```bash
+python test_parse_then_hop.py \
+    --dataset 2wikimultihop \
+    --additional_layer_parse hyperbolic \
+    --additional_layer_hop hyperbolic \
     --knit5_checkpoint_path checkpoints/knit5.pth \
     --parsing_prompt_checkpoint_path checkpoints/parsing_prompt.pth \
-    --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth
+    --hopping_prompt_checkpoint_path checkpoints/hopping_prompt.pth \
+    --batch_size 8
 ```
 
-## Architecture Diagram
+## Analysis Scripts
+
+### Inference-time loop analysis
+Analyzes per-iteration intermediate representations to test whether iteration *t* resolves hop *t*:
+```bash
+python analyze_loop_intermediates.py \
+    --dataset 2wikimultihop \
+    --prompt_checkpoint checkpoints/hopping_prompt.pth \
+    --knit5_checkpoint checkpoints/knit5.pth \
+    --num_loop_iterations 2 \
+    --max_samples 500
+```
+
+### Distance ordering accuracy
+Evaluates whether hyperbolic distances produce correct entity ordering along multi-hop paths:
+```bash
+python compute_distance_accuracy.py \
+    --dataset 2wikimultihop \
+    ...
+```
+
+### δ-hyperbolicity measurement
+Measures how much hyperbolic structure exists in each layer's representations:
+```bash
+python compute_delta_hyperbolicity.py \
+    --dataset 2wikimultihop \
+    ...
+```
+
+## Architecture
 
 ```
-                    Internal Looping
-                    ================
-Input -> T5 Encoder -> [Hyperbolic Layer] -> T5 Decoder -> Output
-                              ^     |
-                              |_____|  (loop N times)
-
-
-                    External Looping
-                    ================
-Question -> Parse Model -> Hop Model -> Hop Model -> ... -> Answer
-                               ^            |
-                               |____________|  (feed output as input)
+                    Looped Hyperbolic Layer
+                    ======================
+Input -> T5 Encoder -> [HyperbolicLayer + iteration embedding + residual] x T -> T5 Decoder -> Output
+                              ^                                            |
+                              |____________________________________________|
+                                        (weight-shared, T iterations)
 ```
+
+The `LoopedHyperbolicLayer` applies a single shared `HyperbolicLayer` *T* times with:
+- Learned iteration embeddings (one per timestep)
+- Residual connections at each iteration
+- Minimal parameter overhead (~T × hidden_dim)
+
+### Alpha Input Injection Variant
+
+An alternative looping strategy using learnable per-loop mixing coefficients (`T5ModelWithLoopedHyperbolic`):
+
+```
+h_i = alpha_i * f(h_{i-1}) + (1 - alpha_i) * h_encoder
+```
+
+Each `alpha_i` is a learned scalar (passed through sigmoid) controlling how much of the transformed representation vs. the original encoder output is retained at each iteration. Includes Poincaré ball clamping for hyperbolic stability. See `src/models/hyperbolic_t5_with_looping_alpha_i.py`.

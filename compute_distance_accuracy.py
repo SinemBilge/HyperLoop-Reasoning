@@ -74,9 +74,7 @@ def hyperbolic_distance(u, v, c=1.0):
     # Multiply by 1/sqrt(c) to scale the distance according to the curvature
     return (1 / np.sqrt(c)) * np.arccosh(arg)
 
-# =============================================================================
 # Helper: Check if distances from the source entity are strictly increasing.
-# =============================================================================
 def check_entity_ordering_for_sample(embeddings, tokens, euclidean = True, curvature = 0.0):
     """
     Given:
@@ -102,9 +100,7 @@ def check_entity_ordering_for_sample(embeddings, tokens, euclidean = True, curva
     is_correct = all(dists[i] > dists[i+1] for i in range(len(dists) - 1))
     return is_correct, dists, tokens
 
-# =============================================================================
 # Helper: Check if distances from the source entity are strictly increasing.
-# =============================================================================
 def check_entity_ordering_for_sample_decoder(embeddings, tokens):
     """
     Given:
@@ -131,9 +127,6 @@ def check_entity_ordering_for_sample_decoder(embeddings, tokens):
     return is_correct, dists, entity_tokens
 
 
-# =============================================================================
-# (Re)Use your mean pooling function (assumes text is semicolon-separated).
-# =============================================================================
 def mean_pool_semicolon_text(text, final_layer_tensor, tokenizer):
     """
     Splits `text` by ';' to obtain N "units" (entities/relations) and
@@ -176,8 +169,6 @@ def mean_pool_semicolon_text(text, final_layer_tensor, tokenizer):
 
 def compute_distance_acc(dataset, prompt_checkpoint_euclidean, prompt_checkpoint_hyperbolic, model_checkpoint_path, dataset_type):
     MAX_ANSWER = None
-    GPU_PARALLELIZATION = False if dataset in ['2wikimultihop', 'wikimultihop', '2wikihop', 'wikihop'] else True
-    WITH_MODEL_STATE_DICT = GPU_PARALLELIZATION
     if dataset in ['2wikimultihop', 'wikimultihop', '2wikihop', 'wikihop']:
         train_dataset, dev_dataset, test_dataset, kg_train, kg_dev, kg_test = load_dataset('dataset/2wikimultihop', do_correct_wrong_evidences=True)
 
@@ -275,21 +266,22 @@ def compute_distance_acc(dataset, prompt_checkpoint_euclidean, prompt_checkpoint
     soft_prompt_checkpoint = torch.load(prompt_checkpoint_hyperbolic)
     soft_prompt = nn.Parameter(soft_prompt_checkpoint['soft_prompt_state_dict'])
     additional_layer = soft_prompt_checkpoint['additional_linear_layer']
-    hyperbolic_knit5 = T5ModelWithAdditionalLayer(layer_type='hyperbolic', checkpoint_hyperbolic_knit5=model_checkpoint_path, with_model_state_dict=WITH_MODEL_STATE_DICT, gpu_parallelization=GPU_PARALLELIZATION)
-    hyperbolic_knit5.hyperbolic_layer.load_state_dict(additional_layer)
+    num_loop_iterations = soft_prompt_checkpoint.get('num_loop_iterations', 1)
+    hyperbolic_knit5 = T5ModelWithAdditionalLayer(layer_type='hyperbolic', checkpoint_hyperbolic_knit5=model_checkpoint_path, num_loop_iterations=num_loop_iterations)
+    hyperbolic_knit5.additional_layer.load_state_dict(additional_layer, strict=False)
     model_hyperbolic = SoftPromptModel(hyperbolic_knit5, None, soft_prompt=soft_prompt)
     print(f"Loaded Hyperbolic checkpoint from {prompt_checkpoint_hyperbolic}")
     # '../checkpoints/metaqa/random_walk_training/euclidean/Jan19_12-49-03_AdaFactor_0.3_0.541324854612918_linear_after_encoder_bsize60_prompt_lenght100_lr0.3_curvature0.541324854612918_additional_layer_lr0.001_max_answer_1/soft_prompt_epoch_66_val_loss_0.2485_em_0.229167.pth'
     soft_prompt_checkpoint = torch.load(prompt_checkpoint_euclidean)
     soft_prompt = nn.Parameter(soft_prompt_checkpoint['soft_prompt_state_dict'])
     additional_layer = soft_prompt_checkpoint['additional_linear_layer']
-    euclidean_knit5 = T5ModelWithAdditionalLayer(layer_type='linear', checkpoint_hyperbolic_knit5=model_checkpoint_path, with_model_state_dict=WITH_MODEL_STATE_DICT, gpu_parallelization=GPU_PARALLELIZATION)
-    euclidean_knit5.hyperbolic_layer.load_state_dict(additional_layer)
+    euclidean_knit5 = T5ModelWithAdditionalLayer(layer_type='euclidean', checkpoint_hyperbolic_knit5=model_checkpoint_path)
+    euclidean_knit5.additional_layer.load_state_dict(additional_layer)
     model_euclidean = SoftPromptModel(euclidean_knit5, None, soft_prompt=soft_prompt)
     print(f"Loaded Euclidean checkpoint from {prompt_checkpoint_euclidean}")
     model_euclidean.to(device)
     model_hyperbolic.to(device)
-    c = model_hyperbolic.knit5.hyperbolic_layer.manifold.c.item()
+    c = model_hyperbolic.knit5.additional_layer.manifold.c.item()
     print(f"{c = }")
 
     model_euclidean.eval()
@@ -384,7 +376,7 @@ def compute_distance_acc(dataset, prompt_checkpoint_euclidean, prompt_checkpoint
                 return_dict=True
             )
             final_dec_euclid = outputs_euclid.encoder_hidden_states[-1]
-            final_dec_euclid = model_euclidean.knit5.hyperbolic_layer(final_dec_euclid)
+            final_dec_euclid = model_euclidean.knit5.additional_layer(final_dec_euclid)
             
             # Get decoder outputs for Hyperbolic model
             outputs_hyp = model_hyperbolic(
@@ -395,7 +387,7 @@ def compute_distance_acc(dataset, prompt_checkpoint_euclidean, prompt_checkpoint
                 return_dict=True
             )
             final_dec_hyp = outputs_hyp.encoder_hidden_states[-1]
-            final_dec_hyp = model_hyperbolic.knit5.hyperbolic_layer(final_dec_hyp)
+            final_dec_hyp = model_hyperbolic.knit5.additional_layer(final_dec_hyp)
         # Assume this function returns a list of pooled embeddings and corresponding tokens
         pooled_dec_euclid, tokens_dec_euclid = mean_pool_semicolon_text(input_text, final_dec_euclid, tokenizer)
         pooled_dec_hyp, tokens_dec_hyp = mean_pool_semicolon_text(input_text, final_dec_hyp, tokenizer)

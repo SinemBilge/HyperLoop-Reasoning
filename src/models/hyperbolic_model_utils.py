@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from .hyperbolic_nn_resnet.modules import PoincareLinear, LorentzLinear
 from .hyperbolic_nn_resnet.manifolds import PoincareBallStdGrad, PoincareBallCustomAutograd
 from .hyperbolic_nn_resnet.manifolds.lorentz import Lorentz
-
 class HyperbolicLinearLayer(nn.Module):
     def __init__(self, in_features, out_features, c):
         super().__init__()
@@ -44,6 +43,7 @@ class HyperbolicLinearLayer(nn.Module):
         hl_output = (1 / torch.sqrt(torch.tensor(self.c))) * outer_tanh * (Wx / norm_Wx)
 
         return hl_output
+    
 class RescaledNormalization(nn.Module):
     def __init__(self):
         super(RescaledNormalization, self).__init__()
@@ -79,7 +79,42 @@ class HyperbolicLayer(nn.Module):
     def forward(self, x):
         if self.scaled:
             x = self.scaler(x)
-        x = self.hyperbolic_linear(x) 
+        x = self.hyperbolic_linear(x)
+        return x
+
+
+class LoopedHyperbolicLayer(nn.Module):
+    """Iteratively applies a shared HyperbolicLayer T times with learned iteration
+    embeddings and residual connections. Inspired by the Universal Transformer's
+    weight-shared looping — adds zero layer parameters, only small iteration
+    embeddings (~T x hidden_dim)."""
+
+    def __init__(self, hyperbolic_layer, num_iterations=2, hidden_dim=1024):
+        super(LoopedHyperbolicLayer, self).__init__()
+        self.hyperbolic_layer = hyperbolic_layer  # shared weights, NOT duplicated
+        self.num_iterations = num_iterations
+        # Learned iteration embeddings (Universal Transformer style timestep encoding)
+        self.iteration_embeddings = nn.Parameter(
+            torch.zeros(num_iterations, hidden_dim)
+        )
+        nn.init.normal_(self.iteration_embeddings, std=0.02)
+
+    @property
+    def manifold(self):
+        """Delegate manifold access to the inner hyperbolic layer (used by trainer for curvature logging)."""
+        return self.hyperbolic_layer.manifold
+
+    def forward(self, x, return_intermediates=False):
+        intermediates = [x.clone()] if return_intermediates else None
+        for t in range(self.num_iterations):
+            residual = x
+            x = x + self.iteration_embeddings[t]  # add iteration signal
+            x = self.hyperbolic_layer(x)           # shared-weight hyperbolic pass
+            x = x + residual                       # residual connection
+            if return_intermediates:
+                intermediates.append(x.clone())
+        if return_intermediates:
+            return x, intermediates  # intermediates[0]=input, [1]=after iter 0, [2]=after iter 1, ...
         return x
 
 

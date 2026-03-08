@@ -1,10 +1,9 @@
 """
-T5 Model with Hyperbolic Layer + Looping
+T5 Model with Additional Bottleneck Layer (Integrated Looping Version)
 
-This extends the original T5ModelWithAdditionalLayer to add looping
-of the euclidean and hyperbolic layer during training, with input injection to prevent
-representation collapse.
-
+This file maintains the full original T5 structure and argument handling, 
+while integrating Shared-Weight Looping and Alpha_i Input Injection for both 
+Hyperbolic and Euclidean (Linear) experiments.
 """
 
 from transformers.modeling_outputs import Seq2SeqLMOutput, BaseModelOutput
@@ -17,7 +16,7 @@ from torch.nn import CrossEntropyLoss
 
 from .hyperbolic_model_utils import *
 
-
+# --- Core Utility: Poincaré Ball Projection ---
 def clamp_to_ball(x: torch.Tensor, max_norm: float = 0.9) -> torch.Tensor:
     """Project vectors to stay within the Poincaré ball boundary."""
     norm = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
@@ -39,6 +38,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
                  gpu_parallelization = False, 
                  soft_prompt_length = 100,
                  only_map_soft_prompt = False,
+                 # These parameters ensure compatibility with looping training scripts
                  num_loops: int = 1,
                  input_injection: bool = True,
                  max_norm: float = 0.9):
@@ -55,7 +55,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
         self.model_name = model_name
         self.additional_layer_type = layer_type
         
-        in_features = config.d_model 
+        in_features = config.d_model # 1024 for Large
         
         if self.only_map_soft_prompt:
             print(f"Passing only soft prompts through bottleneck")
@@ -65,6 +65,9 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
         if layer_type not in ['linear', 'hyperbolic', 'identity']:
             raise ValueError(f"{layer_type} not supported. Use 'hyperbolic', 'linear', or 'identity'")
 
+        # --- RECURRENT ARCHITECTURE SETUP ---
+        # We use a single shared weight layer (1024 dimensions) to avoid
+        # the 6144 dimension errors and to match your existing checkpoints.
         if layer_type == 'linear':
             self.hyperbolic_layer = nn.Linear(in_features=in_features, out_features=in_features)
             print(f"Using Euclidean Layer with {self.num_loops} shared loops")
@@ -81,8 +84,10 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
         else:
             self.hyperbolic_layer = nn.Identity()
 
-        self.alpha = nn.Parameter(torch.tensor(0.5))
+        # Learnable Alpha for Input Injection (Anchoring the reasoning)
+        self.alphas = nn.Parameter(torch.ones(num_loops) * 0.5)
 
+        # --- CHECKPOINT LOADING ---
         if checkpoint_hyperbolic_knit5 is None:
             print("Initializing T5 Model from pretrained weights...")
             pretrained_model = T5ForConditionalGeneration.from_pretrained(model_name)
@@ -93,6 +98,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             print(f"Loading Checkpoint from {checkpoint_hyperbolic_knit5}")
             checkpoint = torch.load(checkpoint_hyperbolic_knit5, map_location='cpu')
             
+            # Extract state_dict and handle module prefixing
             state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
@@ -105,24 +111,31 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
 
     def _apply_recurrent_loop(self, h: torch.Tensor) -> torch.Tensor:
         """
-        Processes hidden states through the shared weights iteratively.
+        Processes hidden states through the shared weights iteratively
+        using per-loop alphas (alpha_i).
         """
         h_original = h
         h_state = h
-        alpha = torch.sigmoid(self.alpha)
 
         for i in range(self.num_loops):
+            # 1. Apply the shared layer f(h_{i-1})
             h_state = self.hyperbolic_layer(h_state)
 
+            # 2. Euclidean Activation: Switch to Leaky ReLU for better gradient flow
             if self.additional_layer_type == 'linear':
-                h_state = torch.relu(h_state)
-    
+                h_state = torch.nn.functional.leaky_relu(h_state, negative_slope=0.01)
+
+            # 3. Hyperbolic Activation: Ball clamping for stability
             elif self.additional_layer_type == 'hyperbolic':
                 h_state = clamp_to_ball(h_state, self.max_norm)
 
+            # 4. Per-Loop Input Injection: h_i = alpha_i * f(h_{i-1}) + (1 - alpha_i) * h_enc
             if self.input_injection:
-                h_state = alpha * h_state + (1 - alpha) * h_original
+                # Sigmoid ensures the specific alpha_i stays between 0.0 and 1.0
+                current_alpha = torch.sigmoid(self.alphas[i]) 
+                h_state = current_alpha * h_state + (1 - current_alpha) * h_original
                 
+                # Final clamp for hyperbolic consistency if needed
                 if self.additional_layer_type == 'hyperbolic':
                     h_state = clamp_to_ball(h_state, self.max_norm)
         
@@ -151,12 +164,12 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-
+        #FUTURE-PROOFING: Head mask handling
         if head_mask is not None and decoder_head_mask is None:
             if self.config.num_layers == self.config.num_decoder_layers:
                 decoder_head_mask = head_mask
 
-  
+        # --- ENCODER LOGIC ---
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
@@ -177,23 +190,26 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
 
         hidden_states = encoder_outputs[0]
 
-
+        # --- BOTTLENECK LOOP APPLICATION ---
         if self.only_map_soft_prompt:
-
+            # Separate soft prompt and document text
             soft_prompt_hidden_state = hidden_states[:, :self.soft_prompt_length, :]
             soft_prompt_hidden_state = self._apply_recurrent_loop(soft_prompt_hidden_state)
             
-
+            # Recombine
             hidden_states = torch.cat([
                 soft_prompt_hidden_state, 
                 hidden_states[:, self.soft_prompt_length:, :]
             ], dim=1)
         else:
+            # Apply recurrent looping to the entire hidden state sequence
             hidden_states = self._apply_recurrent_loop(hidden_states)
 
+        # Device mapping for parallelization
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
+        # Prepare Decoder Input IDs
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             decoder_input_ids = self._shift_right(labels)
 
@@ -207,7 +223,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
-
+        # --- DECODER LOGIC ---
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -230,6 +246,7 @@ class T5ModelWithLoopedHyperbolic(T5ForConditionalGeneration):
             self.lm_head = self.lm_head.to(self.encoder.first_device)
             sequence_output = sequence_output.to(self.lm_head.weight.device)
 
+        # Word embedding tie rescaling
         if self.config.tie_word_embeddings:
             sequence_output = sequence_output * (self.model_dim**-0.5)
 

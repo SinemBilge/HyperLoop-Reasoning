@@ -8,9 +8,7 @@ from src.eval import evaluate_parse_then_hop_training, evaluate_random_walk_trai
 import argparse
 from src.datasets import get_parse_dataset
 
-def test_random_walk(dataset, additional_layer, batch_size, knit5_checkpoint_path, prompt_tuning_checkpoint_path):
-    GPU_PARALLELIZATION = True# if dataset in ['2wikimultihop', 'wikimultihop', '2wikihop', 'wikihop'] else True
-    WITH_MODEL_STATE_DICT = GPU_PARALLELIZATION
+def test_random_walk(dataset, additional_layer, batch_size, knit5_checkpoint_path, prompt_tuning_checkpoint_path, num_loop_iterations=1):
     _, _, parse_test = get_parse_dataset(dataset)
 
     #Specify Hyperparameters via config file
@@ -26,14 +24,20 @@ def test_random_walk(dataset, additional_layer, batch_size, knit5_checkpoint_pat
     print("Loading Tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     print("Loading Model...")
-    hyperbolic_knit5_model = T5ModelWithAdditionalLayer(layer_type=additional_layer, curvature=config.random_walk_training.curvature, checkpoint_hyperbolic_knit5=knit5_checkpoint_path, with_model_state_dict=WITH_MODEL_STATE_DICT, gpu_parallelization=GPU_PARALLELIZATION, soft_prompt_length=config.random_walk_training.prompt_length)
+    hyperbolic_knit5_model = T5ModelWithAdditionalLayer(
+                                layer_type=additional_layer,
+                                curvature=config.random_walk_training.curvature,
+                                checkpoint_hyperbolic_knit5=knit5_checkpoint_path,
+                                with_model_state_dict=True,
+                                num_loop_iterations=num_loop_iterations,
+                            )
     import torch.nn as nn
 
     checkpoint = torch.load(prompt_tuning_checkpoint_path, map_location=device)
     hopping_prompt = nn.Parameter(checkpoint['soft_prompt_state_dict'], requires_grad=False)
     additional_linear_layer = checkpoint['additional_linear_layer']
 
-    hyperbolic_knit5_model.hyperbolic_layer.load_state_dict(additional_linear_layer)
+    hyperbolic_knit5_model.additional_layer.load_state_dict(additional_linear_layer, strict=False)
     print("Loaded Soft Prompts and Additional Linear Layer")
 
     print(f"{hopping_prompt.shape = }")
@@ -56,9 +60,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '--additional_layer',
         type=str,
-        choices=['identity', 'hyperbolic', 'linear'],
+        choices=['identity', 'hyperbolic', 'euclidean'],
         default='identity',  # You can set a different default if needed
-        help='Specify the type of additional layer to use: identity, hyperbolic, or linear'
+        help='Specify the type of additional layer to use: identity, hyperbolic, or euclidean'
     )
     parser.add_argument(
         '--knit5_checkpoint_path',
@@ -78,12 +82,19 @@ if __name__ == '__main__':
         default=8,
         help='Specify batch size'
     )
+    parser.add_argument(
+        '--num_loop_iterations',
+        type=int,
+        default=1,
+        help='Number of loop iterations (1=original, 2+=looped)'
+    )
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
-    dataset = args.dataset 
+    dataset = args.dataset
     additional_layer = args.additional_layer
     knit5_checkpoint_path = args.knit5_checkpoint_path
     prompt_tuning_checkpoint_path = args.prompt_tuning_checkpoint_path
     batch_size = args.batch_size
-    test_random_walk(dataset, additional_layer, batch_size, knit5_checkpoint_path, prompt_tuning_checkpoint_path)
+    num_loop_iterations = args.num_loop_iterations
+    test_random_walk(dataset, additional_layer, batch_size, knit5_checkpoint_path, prompt_tuning_checkpoint_path, num_loop_iterations=num_loop_iterations)
